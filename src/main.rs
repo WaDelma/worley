@@ -1,110 +1,76 @@
-use std::ops;
+use std::path::Path;
+
+use image::{ImageBuffer, Rgb};
+
+use nalgebra::Point2 as Point;
+use nalgebra::Vector2 as Vector;
+
+use rand::{rngs::SmallRng, Rng, SeedableRng};
+
+use byteorder::{ByteOrder, LE};
 
 fn main() {
-    
+    let mut buffer = ImageBuffer::new(1 << 8, 1 << 8);
+    let scale = 0.05;
+    for x in 0..buffer.width() {
+        for y in 0..buffer.height() {
+            let xx = x as f32 - buffer.width() as f32 / 2.;
+            let yy = y as f32 - buffer.height() as f32 / 2.;
+            let noise = noise(Point::new(xx * scale, yy * scale), 1000, &|v1, v2| {
+                (v1 - v2).lp_norm(2)
+            });
+            let red = ((noise.0 * 1.75).tan() * 255.) as u8;
+            let green = ((noise.0 * 6.).atan() * 255.) as u8;
+            let blue = ((1. - noise.1).powf(1.2) * 255.) as u8;
+            buffer[(x, y)] = Rgb([red, green, blue]);
+        }
+    }
+    println!("Hashes: {}", unsafe { HASHES });
+    buffer.save(Path::new("lol.png")).unwrap();
 }
 
-fn noise(coord: Coord<f32>) -> f32 {
-    let grid = Coord::new(coord[0] as i32, coord[1] as i32);
-    let mut local = Coord::new(1, 1);
-    let mut cur = (Coord::zero(), 2.);
-    let mut allowed = vec![Neighborhood::full(); 2];
-    let mut all = true;
-    
-    for i in 0..2 {
-        if all {
-            let new_cur = closest_sample(coord, grid + local);
-            if new_cur.1 < cur.1 {
-                cur = new_cur;
-            } else {
-                allowed[i].set(local[i], false);
-                local = Coord::new(1, 1);
+fn noise<F>(coord: Point<f32>, seed: i32, d: &F) -> (f32, f32)
+where
+    F: Fn(Vector<f32>, Vector<f32>) -> f32,
+{
+    let grid_coord = coord.coords.map(|f| f.floor() as i32);
+
+    let mut closest = 2.;
+    let mut snd_closest = 2.;
+    // Hashes in naive: 589824
+    for x in -1..=1 {
+        for y in -1..=1 {
+            let other_coord = grid_coord + Vector::new(x, y);
+
+            let dist = closest_sample(coord, other_coord, seed, d);
+            if dist < closest {
+                snd_closest = closest;
+                closest = dist;
             }
-        } else {
-            all = true;
-        }
-        let (_, dist) = cur;
-        if dist < coord[i] {
-            allowed[i].set(local[i] + 1, false);
-            local[i] -= 1;
-        } else if dist < 1. - coord[i] {
-            allowed[i].set(local[i], false);
-            local[i] += 1;
-        } else {
-            allowed[i].set(local[i] + 1, false);
-            allowed[i].set(local[i], false);
-            all = false;
         }
     }
-    
-    for (i, x) in allowed[0].0.iter().enumerate() {
-        for (j, y) in allowed[1].0.iter().enumerate() {
-            if *x && *y {
-                let local = Coord::new(i as i32 * 2 - 1, j as i32 * 2 - 1);
-                let new_cur = closest_sample(coord, grid + local);
-                if new_cur.1 < cur.1 {
-                    cur = new_cur;
-                }
-            }    
-        }
-    }
-    
-    println!("{:?}", cur);
-    return 0.;
+    (
+        if closest > 1. { 1. } else { closest },
+        if snd_closest > 1. { 1. } else { snd_closest },
+    )
 }
 
-fn closest_sample(coord: Coord<f32>, grid: Coord<i32>) -> (Coord<f32>, f32) {
-    unimplemented!()
-}
+static mut HASHES: usize = 0;
 
-#[derive(Debug, Clone, Copy)]
-struct Coord<F: Copy>([F; 2]);
-
-impl<F: Copy> Coord<F> {
-    fn new(x: F, y: F) -> Self {
-        Coord([x, y])
+fn closest_sample<F>(coord: Point<f32>, other_coord: Vector<i32>, seed: i32, d: &F) -> f32
+where
+    F: Fn(Vector<f32>, Vector<f32>) -> f32,
+{
+    unsafe {
+        HASHES += 1;
     }
-}
+    let mut s = [0u8; 16];
+    LE::write_i32(&mut s[0..=3], other_coord.x);
+    LE::write_i32(&mut s[4..=7], other_coord.y);
+    LE::write_i32(&mut s[8..=11], seed);
+    let mut rng = SmallRng::from_seed(s);
+    let point = rng.gen::<Vector<f32>>();
 
-impl Coord<f32> {
-    fn zero() -> Self {
-        Coord([0.; 2])
-    }
-}
-
-impl<F: Copy> ops::Index<usize> for Coord<F> {
-    type Output = F;
-    fn index(&self, index: usize) -> &F {
-        &self.0[index]
-    }
-}
-
-impl<F: Copy> ops::IndexMut<usize> for Coord<F> {
-    fn index_mut(&mut self, index: usize) -> &mut F {
-        &mut self.0[index]
-    }
-}
-
-
-impl<F: ops::AddAssign + Copy> ops::Add for Coord<F> {
-    type Output = Self;
-    fn add(mut self, lhs: Self) -> Self::Output {
-        self.0[0] += lhs.0[0];
-        self.0[1] += lhs.0[1];
-        self
-    }
-}
-
-#[derive(Clone)]
-struct Neighborhood([bool; 2]);
-
-impl Neighborhood {
-    fn full() -> Self {
-        Neighborhood([true; 2])
-    }
-    fn set(&mut self, index: i32, value: bool) {
-        if 0 <= index && index < 2 {
-            self.0[index as usize] = value;
-        }
-    }
+    let feature = other_coord.map(|f| f as f32) + point;
+    d(coord.coords, feature)
 }

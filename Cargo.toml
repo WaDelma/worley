@@ -5,3 +5,7 @@ authors = ["delma <delma@del.ma>"]
 edition = "2018"
 
 [dependencies]
+image = "0.21"
+nalgebra = "0.17"
+rand = "0.6"
+byteorder = "1.3" 
